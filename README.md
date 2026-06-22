@@ -32,7 +32,7 @@ curl -s http://localhost:8000/health        # {"status":"healthy", ...}
 ```
 
 - API docs (Swagger UI): <http://localhost:8000/docs>
-- Grafana (anonymous, ingestion dashboard): <http://localhost:3000>
+- Grafana (anonymous view of the ingestion dashboard, no login): <http://localhost:3000> — admin login `admin` / `admin`
 - Prometheus: <http://localhost:9090> · RabbitMQ management UI: <http://localhost:15672> (guest / guest)
 
 Tear down (and wipe volumes):
