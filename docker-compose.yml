@@ -1,0 +1,223 @@
+services:
+  # PostgreSQL Database (direct connections: migrate + the outbox relay only).
+  db:
+    image: postgres:15-alpine
+    container_name: medical_data_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: medical_data
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d medical_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+
+  # PgBouncer — connection pooler (transaction mode). All application DB traffic (API +
+  # workers) connects here; it multiplexes many client connections onto a small, bounded set
+  # of real Postgres connections, so the app tier can scale without exhausting Postgres
+  # max_connections. asyncpg requires statement_cache_size=0 for transaction pooling — set in
+  # src/database.py. (migrate + the outbox relay bypass the pooler: DDL and LISTEN/NOTIFY.)
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: medical_data_pgbouncer
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: user
+      DB_PASSWORD: pass
+      DB_NAME: medical_data
+      POOL_MODE: transaction
+      AUTH_TYPE: plain
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "40"
+      MIN_POOL_SIZE: "5"
+    ports:
+      - "6432:5432"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+  # RabbitMQ Message Broker (+ Prometheus plugin on :15692 with per-queue metrics).
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: medical_data_rabbitmq
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+      - "15692:15692"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./deploy/rabbitmq/20-prometheus.conf:/etc/rabbitmq/conf.d/20-prometheus.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+
+  # Schema migrations (one-shot): applies alembic upgrade head, then exits. Connects
+  # DIRECTLY to Postgres (DDL/advisory locks must not pass through a transaction pooler).
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: medical_data_migrate
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/medical_data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # FastAPI Application — connects to the DB THROUGH PgBouncer.
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: medical_data_api
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
+      DEBUG: "false"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: on-failure
+
+  # Outbox Relay — connects DIRECTLY to Postgres (needs LISTEN/NOTIFY, which transaction
+  # pooling breaks). Publishes committed outbox events to the medical.events topic exchange.
+  # No container_name -> scalable for HA; relays coordinate via FOR UPDATE SKIP LOCKED
+  # (`docker compose up -d --scale outbox-relay=N`).
+  outbox-relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: python -m src.outbox.relay
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/medical_data
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+      OUTBOX_POLL_INTERVAL: 5.0
+      OUTBOX_BATCH_SIZE: 100
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./src:/app/src:ro
+    restart: on-failure
+
+  # Alerts consumer (aio-pika) — queue 'alerts', DB via PgBouncer.
+  # No container_name -> scalable: `docker compose up -d --scale worker-alerts=N`.
+  worker-alerts:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: python -m src.consumers alerts
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./src:/app/src:ro
+    restart: on-failure
+
+  # Risk-scoring consumer (aio-pika) — queue 'scoring', isolated so heavier scoring jobs
+  # never block alerts. No container_name -> scalable (`--scale worker-scoring=N`).
+  worker-scoring:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: python -m src.consumers scoring
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./src:/app/src:ro
+    restart: on-failure
+
+  # Prometheus — scrapes api:/metrics and rabbitmq:15692/metrics (see deploy/prometheus.yml).
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: medical_data_prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - api
+      - rabbitmq
+    restart: on-failure
+
+  # Grafana — auto-provisioned Prometheus datasource + the ingestion dashboard.
+  # Anonymous access is enabled so the dashboard is screenshot-ready without a login.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: medical_data_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: light
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: on-failure
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,23 @@
+# Core dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+sqlalchemy[asyncio]==2.0.23
+asyncpg==0.29.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+# Async AMQP client: the outbox relay publishes plain-JSON events and the
+# src/consumers workers consume them (no task framework — see docs/report).
+aio-pika==9.3.0
+python-dotenv==1.0.0
+prometheus-fastapi-instrumentator==7.0.0   # /metrics for Prometheus (RPS, status, latency)
+
+# Development dependencies
+pytest==9.1.0
+pytest-asyncio==1.4.0
+black==23.12.1
+ruff==0.1.14
+httpx==0.26.0
+locust==2.44.3   # load testing (scripts/locustfile.py)
+
+# Alembic for migrations (schema source of truth)
+alembic==1.18.4

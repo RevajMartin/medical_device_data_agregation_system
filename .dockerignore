@@ -1,0 +1,19 @@
+# Keep the build context small — the Dockerfile only copies requirements.txt, src/,
+# tests/, migrations/ and alembic.ini. Everything below is irrelevant to the image.
+.venv/
+.git/
+.gitignore
+.dockerignore
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.vscode/
+.claude/
+docs/
+deploy/
+scripts/loadout/
+*.md
+docker-compose.yml
+.env
