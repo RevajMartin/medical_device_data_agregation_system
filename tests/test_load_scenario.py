@@ -22,9 +22,11 @@ from tests.helpers import (
     PATIENT_1,
     db_fetch,
     get_aggregations,
+    hr_reading,
     ingest_measurement,
     register_device,
-    wait_for,
+    wait_for_alert_count,
+    wait_for_measurement_count,
 )
 
 # ---------------------------------------------------------------------------
@@ -94,11 +96,9 @@ async def test_ingest_normal_measurements(registered):
 
     # The API commits in its request-teardown (after the 201 is returned), so a few
     # commits can still be in flight right after gather() returns; poll for the count.
-    async def all_committed():
-        rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
-        return rows[0]["c"] == 60
-
-    assert await wait_for(all_committed, timeout=10.0), "not all 60 measurements were committed"
+    assert await wait_for_measurement_count(
+        60, timeout=10.0
+    ), "not all 60 measurements were committed"
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ async def test_clinical_threshold_alerts(registered):
         (
             "HR001",
             PATIENT_1,
-            {"device_type": "heart_rate", "heart_rate": 160, "measurement_quality": "good"},
+            hr_reading(160),
             {"field": "heart_rate", "rule": "heart_rate>150"},
         ),
         (
@@ -144,11 +144,7 @@ async def test_clinical_threshold_alerts(registered):
     )
     assert r.status_code == 201
 
-    async def have_all_alerts():
-        rows = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-        return rows[0]["c"] >= len(cases)
-
-    assert await wait_for(have_all_alerts, timeout=15.0), "alerts were not created in time"
+    assert await wait_for_alert_count(len(cases), timeout=15.0), "alerts were not created in time"
 
     alerts = await db_fetch("SELECT * FROM alerts ORDER BY id")
     # Exactly the clinical cases alerted (control did not).
@@ -227,11 +223,7 @@ async def test_concurrent_load(registered):
                 }
         elif i % 10 < 6:  # clinically concerning but VALID (per spec)
             if cfg["device_type"] == "heart_rate":
-                data = {
-                    "device_type": "heart_rate",
-                    "heart_rate": 160,
-                    "measurement_quality": "good",
-                }
+                data = hr_reading(160)
             elif cfg["device_type"] == "blood_pressure":
                 data = {
                     "device_type": "blood_pressure",

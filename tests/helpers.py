@@ -120,6 +120,11 @@ async def ingest_measurement(
         return await client.post(f"{BASE_URL}/ingest/", json=payload, headers=headers)
 
 
+def hr_reading(bpm: int = 72, quality: str = "good") -> dict:
+    """Heart-rate ``data`` payload for ``ingest_measurement`` (device-specific fields)."""
+    return {"device_type": "heart_rate", "heart_rate": bpm, "measurement_quality": quality}
+
+
 async def get_aggregations(
     patient_id: str, start: datetime, end: datetime, api_key: str
 ) -> dict:
@@ -206,6 +211,49 @@ async def wait_for(predicate, timeout: float = 10.0, interval: float = 0.5) -> b
             return True
         await asyncio.sleep(interval)
     return False
+
+
+# --- Count oracles + poll helpers (shared by the load / reliability tests) ---
+
+
+async def count_measurements() -> int:
+    rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
+    return rows[0]["c"]
+
+
+async def count_alerts() -> int:
+    rows = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
+    return rows[0]["c"]
+
+
+async def alert_count(measurement_id: int) -> int:
+    """Number of alerts for a single measurement."""
+    rows = await db_fetch(
+        "SELECT COUNT(*) AS c FROM alerts WHERE measurement_id = $1", measurement_id
+    )
+    return rows[0]["c"]
+
+
+async def wait_for_measurement_count(n: int, timeout: float = 15.0) -> bool:
+    """Poll until exactly ``n`` measurements are committed.
+
+    The API commits in its request-teardown (after the 201 response), so a count taken
+    right after a concurrent burst can still be short a few in-flight commits.
+    """
+
+    async def reached():
+        return await count_measurements() == n
+
+    return await wait_for(reached, timeout=timeout)
+
+
+async def wait_for_alert_count(n: int, timeout: float = 15.0) -> bool:
+    """Poll until at least ``n`` alerts exist."""
+
+    async def reached():
+        return await count_alerts() >= n
+
+    return await wait_for(reached, timeout=timeout)
 
 
 # --- Reliability invariants (shared oracle for the load / chaos tests) ---

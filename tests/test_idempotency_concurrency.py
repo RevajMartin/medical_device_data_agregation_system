@@ -12,15 +12,17 @@ from datetime import UTC, datetime, timedelta
 
 from tests.helpers import (
     PATIENT_1,
+    alert_count,
     db_execute,
     db_fetch,
+    hr_reading,
     ingest_measurement,
     measurement_id,
     wait_for,
 )
 
-HR = {"device_type": "heart_rate", "heart_rate": 72, "measurement_quality": "good"}
-HR_CLINICAL = {"device_type": "heart_rate", "heart_rate": 165, "measurement_quality": "good"}
+HR = hr_reading()
+HR_CLINICAL = hr_reading(165)
 
 
 async def _event_count(measurement_id: int) -> int:
@@ -77,8 +79,7 @@ async def test_alert_idempotent_on_redelivery(registered):
     mid = await measurement_id("HR001", ts)
 
     async def alert_created():
-        rows = await db_fetch("SELECT id FROM alerts WHERE measurement_id = $1", mid)
-        return len(rows) == 1
+        return await alert_count(mid) == 1
 
     assert await wait_for(alert_created, timeout=15.0), "first alert was not created"
 
@@ -91,5 +92,4 @@ async def test_alert_idempotent_on_redelivery(registered):
     await db_execute("NOTIFY outbox_channel, 'alert_redelivery'")
     await asyncio.sleep(3)  # allow the redelivered job to run
 
-    rows = await db_fetch("SELECT COUNT(*) AS c FROM alerts WHERE measurement_id = $1", mid)
-    assert rows[0]["c"] == 1, "redelivery must not create a duplicate alert"
+    assert await alert_count(mid) == 1, "redelivery must not create a duplicate alert"

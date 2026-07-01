@@ -21,15 +21,19 @@ import pytest
 from tests.helpers import (
     DEVICES,
     PATIENT_1,
+    alert_count,
     assert_no_duplicate_alerts,
     assert_no_duplicate_measurements,
     assert_outbox_drained,
+    count_alerts,
     db_execute,
     db_fetch,
+    hr_reading,
     ingest_measurement,
     measurement_id,
     replay_failed_job,
     wait_for,
+    wait_for_alert_count,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +42,7 @@ requires_chaos = pytest.mark.skipif(
     reason="kills/restarts containers; set RUN_CHAOS=1 to run",
 )
 
-HR_CLINICAL = {"device_type": "heart_rate", "heart_rate": 170, "measurement_quality": "good"}
+HR_CLINICAL = hr_reading(170)
 
 
 async def _compose(*args: str) -> None:
@@ -52,15 +56,8 @@ async def _compose(*args: str) -> None:
     )
 
 
-async def _alert_count(measurement_id: int) -> int:
-    rows = await db_fetch(
-        "SELECT COUNT(*) AS c FROM alerts WHERE measurement_id = $1", measurement_id
-    )
-    return rows[0]["c"]
-
-
 async def _alert_count_eq(measurement_id: int, n: int) -> bool:
-    return await _alert_count(measurement_id) == n
+    return await alert_count(measurement_id) == n
 
 
 async def _wait_container_healthy(container: str, timeout: float = 60.0) -> None:
@@ -146,7 +143,7 @@ async def test_worker_crash_loses_no_alert(registered):
         assert r.status_code == 201
         mid = await measurement_id("HR001", ts)
         await asyncio.sleep(2)
-        assert await _alert_count(mid) == 0, "no alert expected while the worker is down"
+        assert await alert_count(mid) == 0, "no alert expected while the worker is down"
     finally:
         await _compose("start", "worker-alerts")
 
@@ -207,7 +204,7 @@ async def test_broker_outage_keeps_events_safe(registered):
         assert (
             rows and rows[0]["acked"] is False
         ), "event must stay unacked while the broker is down"
-        assert await _alert_count(mid) == 0
+        assert await alert_count(mid) == 0
     finally:
         await _compose("start", "rabbitmq")
         await _wait_container_healthy("medical_data_rabbitmq")
@@ -241,7 +238,7 @@ async def test_two_relays_no_double_processing(registered):
         for i in range(n):
             dev = hr_devices[i % len(hr_devices)]
             ts = base + timedelta(milliseconds=i)
-            data = {"device_type": "heart_rate", "heart_rate": 160, "measurement_quality": "good"}
+            data = hr_reading(160)
             items.append((dev, DEVICES[dev]["patient_id"], data, registered[dev], ts))
 
         responses = await asyncio.gather(
@@ -249,16 +246,11 @@ async def test_two_relays_no_double_processing(registered):
         )
         assert all(r.status_code == 201 for r in responses)
 
-        async def all_alerts():
-            a = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-            return a[0]["c"] >= n
-
-        assert await wait_for(
-            all_alerts, timeout=60.0
+        assert await wait_for_alert_count(
+            n, timeout=60.0
         ), "two relays did not drain the backlog in time"
 
-        alerts = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-        assert alerts[0]["c"] == n, "exactly one alert per measurement expected"
+        assert await count_alerts() == n, "exactly one alert per measurement expected"
         await assert_no_duplicate_measurements()
         await assert_no_duplicate_alerts()
         await assert_outbox_drained(timeout=30.0)

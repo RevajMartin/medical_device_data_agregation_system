@@ -17,6 +17,7 @@ from tests.helpers import (
     db_execute,
     db_fetch,
     get_risk_scores,
+    hr_reading,
     ingest_measurement,
     request_risk_score,
     wait_for,
@@ -30,7 +31,7 @@ async def test_risk_score_pipeline(registered):
     await ingest_measurement(
         "HR001",
         PATIENT_1,
-        {"device_type": "heart_rate", "heart_rate": 140, "measurement_quality": "good"},
+        hr_reading(140),
         registered["HR001"],
         base,
     )

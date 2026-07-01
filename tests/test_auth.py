@@ -18,12 +18,13 @@ from tests.helpers import (
     BASE_URL,
     PATIENT_1,
     get_risk_scores,
+    hr_reading,
     ingest_measurement,
     replay_failed_job,
     request_risk_score,
 )
 
-HR = {"device_type": "heart_rate", "heart_rate": 72, "measurement_quality": "good"}
+HR = hr_reading()
 
 
 # ---------------------------------------------------------------------------
