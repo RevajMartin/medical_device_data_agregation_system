@@ -8,8 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.repositories import aggregations as aggregations_repo
 from src.schemas.responses import AggregationResponse, FieldStats
+from src.services.device_auth import require_patient_scope
 
-router = APIRouter(prefix="/aggregations", tags=["aggregations"])
+# Patient-scoped: a valid X-Device-Key whose patient matches {patient_id} (else 401/403).
+router = APIRouter(
+    prefix="/aggregations",
+    tags=["aggregations"],
+    dependencies=[Depends(require_patient_scope)],
+)
 
 
 # Numeric measurement fields grouped by their owning device_type. Field names come

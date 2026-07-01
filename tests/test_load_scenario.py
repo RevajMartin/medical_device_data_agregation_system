@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from tests.helpers import (
+    ADMIN_TOKEN,
     BASE_URL,
     DEVICES,
     PATIENT_1,
@@ -47,6 +48,7 @@ async def test_register_devices(clean_db):
         resp = await client.post(
             f"{BASE_URL}/devices/register",
             json={"device_id": "HR001", "patient_id": PATIENT_1, "device_type": "heart_rate"},
+            headers={"X-Admin-Token": ADMIN_TOKEN},
         )
     assert resp.status_code == 409
 
@@ -90,8 +92,13 @@ async def test_ingest_normal_measurements(registered):
     for r in responses:
         assert r.status_code in (200, 201)
 
-    rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
-    assert rows[0]["c"] == 60
+    # The API commits in its request-teardown (after the 201 is returned), so a few
+    # commits can still be in flight right after gather() returns; poll for the count.
+    async def all_committed():
+        rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
+        return rows[0]["c"] == 60
+
+    assert await wait_for(all_committed, timeout=10.0), "not all 60 measurements were committed"
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +108,7 @@ async def test_ingest_normal_measurements(registered):
 
 async def test_clinical_threshold_alerts(registered):
     """Clinically concerning (but valid) values must asynchronously create alerts."""
-    base = datetime.now(UTC) + timedelta(hours=1)
+    base = datetime.now(UTC) - timedelta(hours=1)
     cases = [
         (
             "HR001",
@@ -166,7 +173,7 @@ async def test_clinical_threshold_alerts(registered):
 
 async def test_idempotency(registered):
     """Identical (device_id, timestamp) submissions: 201 then 200, one DB row."""
-    ts = datetime.now(UTC) + timedelta(hours=2)
+    ts = datetime.now(UTC) - timedelta(hours=2)
     data = {"device_type": "heart_rate", "heart_rate": 72, "measurement_quality": "good"}
 
     r1 = await ingest_measurement("HR001", PATIENT_1, data, registered["HR001"], ts)
@@ -191,7 +198,7 @@ async def test_idempotency(registered):
 
 async def test_concurrent_load(registered):
     """100 concurrent submissions (normal, clinical, duplicates) all accepted."""
-    base = datetime.now(UTC) + timedelta(hours=3)
+    base = datetime.now(UTC) - timedelta(hours=3)
     items = []
     for i in range(100):
         device_id = list(DEVICES.keys())[i % 6]
@@ -286,7 +293,9 @@ async def test_aggregations(registered):
         )
         assert r.status_code == 201
 
-    agg = await get_aggregations(PATIENT_1, base - timedelta(hours=1), base + timedelta(hours=1))
+    agg = await get_aggregations(
+        PATIENT_1, base - timedelta(hours=1), base + timedelta(hours=1), registered["HR001"]
+    )
     assert "heart_rate" in agg
     hr_agg = agg["heart_rate"]
     assert hr_agg["count"] == 3

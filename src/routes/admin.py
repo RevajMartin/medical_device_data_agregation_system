@@ -14,8 +14,10 @@ from src.database import get_db
 from src.outbox.producer import emit_outbox_event
 from src.repositories import failed_jobs as failed_jobs_repo
 from src.schemas.responses import FailedJobResponse, ReplayResponse
+from src.services.device_auth import require_admin
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# Operator-only: every route requires a valid X-Admin-Token (checked before any lookup).
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/failed-jobs", response_model=list[FailedJobResponse])

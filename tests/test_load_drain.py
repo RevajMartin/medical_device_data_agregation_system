@@ -34,7 +34,7 @@ N = 200
 async def test_burst_fully_drains_to_alerts(registered):
     """Fire N clinically-high measurements at once; every one must end up as exactly
     one alert, with no duplicates and a fully-drained outbox."""
-    base = datetime.now(UTC) + timedelta(hours=12)
+    base = datetime.now(UTC) - timedelta(hours=12)
     hr_devices = [d for d, c in DEVICES.items() if c["device_type"] == "heart_rate"]
 
     items = []
@@ -50,8 +50,13 @@ async def test_burst_fully_drains_to_alerts(registered):
     bad = [r.status_code for r in responses if r.status_code != 201]
     assert not bad, f"expected all 201, got non-201: {bad[:5]}"
 
-    rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
-    assert rows[0]["c"] == N
+    # The API commits in its request-teardown (after the 201 is returned), so some commits
+    # can still be in flight right after gather() returns; poll for the count.
+    async def all_committed():
+        rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
+        return rows[0]["c"] == N
+
+    assert await wait_for(all_committed, timeout=15.0), "not all measurements were committed"
 
     async def all_alerts():
         a = await db_fetch("SELECT COUNT(*) AS c FROM alerts")

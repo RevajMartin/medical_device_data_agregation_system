@@ -60,6 +60,9 @@ class ClinicalSettings(_Base):
     SPO2_MIN: float = 50.0
     SPO2_MAX: float = 100.0
 
+    # Reject measurement timestamps more than this far in the future (clock-skew tolerance).
+    MAX_FUTURE_SKEW_SECONDS: int = 60
+
     # Clinical alert thresholds
     HR_ALERT_MAX: int = 150
     SPO2_ALERT_MIN: float = 90.0
@@ -78,6 +81,11 @@ class SecuritySettings(_Base):
     # Without this secret an attacker who leaks the devices table cannot verify
     # any key offline. MUST be overridden in production via env var or .env.
     API_KEY_SECRET: str = "change-me-in-production-use-secrets"
+
+    # Operator token for the admin-scoped routes (/admin/*, /devices/register). Distinct
+    # from device API keys on purpose: a leaked device key must never grant registration
+    # or dead-letter access. MUST be overridden in production via env var or .env.
+    ADMIN_API_TOKEN: str = "change-me-admin-token"
 
 
 class Settings(

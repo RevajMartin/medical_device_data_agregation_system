@@ -65,3 +65,41 @@ async def get_authenticated_device(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Device is deactivated")
 
     return device
+
+
+async def require_patient_scope(
+    patient_id: str,
+    device: Annotated[Device, Depends(get_authenticated_device)],
+) -> Device:
+    """Authorize a patient-scoped read/request: the device key must own ``patient_id``.
+
+    ``patient_id`` is the route's path parameter (FastAPI injects it here). Reuses the
+    device-key authentication and adds the cross-patient check (403) the read path lacked,
+    so a key scoped to one patient cannot read another patient's data.
+    """
+    if device.patient_id != patient_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key not authorized for this patient",
+        )
+    return device
+
+
+# Operator credential for admin-scoped routes (registration + dead-letter admin).
+# auto_error=False so we return 401 (not the default 403) for a missing token.
+_admin_key_scheme = APIKeyHeader(name="X-Admin-Token", auto_error=False)
+
+
+async def require_admin(admin_token: Annotated[str | None, Security(_admin_key_scheme)]) -> None:
+    """Authorize an operator (admin) request via the ``X-Admin-Token`` header.
+
+    Compared in constant time against ``settings.ADMIN_API_TOKEN``. Deliberately separate
+    from device API keys: a leaked device key must never grant device registration or
+    dead-letter access.
+    """
+    if not admin_token or not hmac.compare_digest(admin_token, settings.ADMIN_API_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid admin token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

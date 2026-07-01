@@ -12,9 +12,15 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import httpx
-
-from tests.helpers import BASE_URL, PATIENT_1, db_execute, db_fetch, ingest_measurement, wait_for
+from tests.helpers import (
+    PATIENT_1,
+    db_execute,
+    db_fetch,
+    get_risk_scores,
+    ingest_measurement,
+    request_risk_score,
+    wait_for,
+)
 
 
 async def test_risk_score_pipeline(registered):
@@ -43,9 +49,8 @@ async def test_risk_score_pipeline(registered):
         base + timedelta(seconds=2),
     )
 
-    # Request the async ML risk score.
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{BASE_URL}/patients/{PATIENT_1}/risk-score")
+    # Request the async risk score (patient-scoped: one of the patient's device keys).
+    resp = await request_risk_score(PATIENT_1, registered["HR001"])
     assert resp.status_code == 202
     request_id = resp.json()["request_id"]
 
@@ -71,8 +76,7 @@ async def test_risk_score_pipeline(registered):
     assert {"hr_mean", "spo2_min", "systolic_max"} <= set(details.keys())
 
     # Result is exposed via GET.
-    async with httpx.AsyncClient() as client:
-        get_resp = await client.get(f"{BASE_URL}/patients/{PATIENT_1}/risk-scores")
+    get_resp = await get_risk_scores(PATIENT_1, registered["HR001"])
     assert get_resp.status_code == 200
     body = get_resp.json()
     assert any(s["request_id"] == request_id for s in body["risk_scores"])

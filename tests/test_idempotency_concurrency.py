@@ -15,18 +15,12 @@ from tests.helpers import (
     db_execute,
     db_fetch,
     ingest_measurement,
+    measurement_id,
     wait_for,
 )
 
 HR = {"device_type": "heart_rate", "heart_rate": 72, "measurement_quality": "good"}
 HR_CLINICAL = {"device_type": "heart_rate", "heart_rate": 165, "measurement_quality": "good"}
-
-
-async def _measurement_id(device_id: str, ts: datetime):
-    rows = await db_fetch(
-        "SELECT id FROM measurements WHERE device_id = $1 AND timestamp = $2", device_id, ts
-    )
-    return rows[0]["id"] if rows else None
 
 
 async def _event_count(measurement_id: int) -> int:
@@ -41,7 +35,7 @@ async def _event_count(measurement_id: int) -> int:
 async def test_concurrent_duplicate_ingest(registered):
     """20 identical (device_id, timestamp) submissions fired simultaneously: exactly
     one 201 (the winner), the rest 200, exactly one row, exactly one outbox event."""
-    ts = datetime.now(UTC) + timedelta(hours=5)
+    ts = datetime.now(UTC) - timedelta(hours=5)
 
     responses = await asyncio.gather(
         *[ingest_measurement("HR001", PATIENT_1, HR, registered["HR001"], ts) for _ in range(20)]
@@ -61,11 +55,11 @@ async def test_concurrent_duplicate_ingest(registered):
 
 async def test_duplicate_ingest_emits_no_second_event(registered):
     """A duplicate submission (HTTP 200) must not enqueue a second background job."""
-    ts = datetime.now(UTC) + timedelta(hours=6)
+    ts = datetime.now(UTC) - timedelta(hours=6)
 
     r1 = await ingest_measurement("HR001", PATIENT_1, HR, registered["HR001"], ts)
     assert r1.status_code == 201
-    mid = await _measurement_id("HR001", ts)
+    mid = await measurement_id("HR001", ts)
 
     r2 = await ingest_measurement("HR001", PATIENT_1, HR, registered["HR001"], ts)
     assert r2.status_code == 200
@@ -76,11 +70,11 @@ async def test_duplicate_ingest_emits_no_second_event(registered):
 async def test_alert_idempotent_on_redelivery(registered):
     """Re-delivering measurement.created for the same measurement yields one alert
     (UNIQUE(measurement_id, rule)) — the at-least-once -> effectively-once guarantee."""
-    ts = datetime.now(UTC) + timedelta(hours=7)
+    ts = datetime.now(UTC) - timedelta(hours=7)
 
     r = await ingest_measurement("HR001", PATIENT_1, HR_CLINICAL, registered["HR001"], ts)
     assert r.status_code == 201
-    mid = await _measurement_id("HR001", ts)
+    mid = await measurement_id("HR001", ts)
 
     async def alert_created():
         rows = await db_fetch("SELECT id FROM alerts WHERE measurement_id = $1", mid)

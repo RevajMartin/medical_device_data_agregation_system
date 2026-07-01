@@ -94,6 +94,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
       DEBUG: "false"
+      # Operator token for /admin/* and /devices/register (override in production).
+      ADMIN_API_TOKEN: change-me-admin-token
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -11,13 +11,16 @@ from src.database import get_db
 from src.repositories import devices as devices_repo
 from src.repositories import patients as patients_repo
 from src.schemas.device import DeviceRegister, DeviceRegisterResponse
-from src.services.device_auth import hash_api_key
+from src.services.device_auth import hash_api_key, require_admin
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
 @router.post(
-    "/register", response_model=DeviceRegisterResponse, status_code=status.HTTP_201_CREATED
+    "/register",
+    response_model=DeviceRegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
 )
 async def register_device(
     payload: DeviceRegister,
