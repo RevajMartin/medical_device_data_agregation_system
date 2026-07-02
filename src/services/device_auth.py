@@ -15,8 +15,9 @@ from src.models.device import Device
 from src.repositories import devices as devices_repo
 
 # Registers X-Device-Key as a security scheme in OpenAPI (lock icon in Swagger UI).
-# auto_error=False lets us return 401 instead of the default 403 for missing keys.
-_api_key_scheme = APIKeyHeader(name="X-Device-Key", auto_error=False)
+# scheme_name keeps it distinct from the admin-token scheme in the docs; auto_error=False
+# lets us return 401 instead of the default 403 for a missing key.
+_api_key_scheme = APIKeyHeader(name="X-Device-Key", scheme_name="DeviceKey", auto_error=False)
 
 
 def hash_api_key(api_key: str) -> str:
@@ -86,8 +87,9 @@ async def require_patient_scope(
 
 
 # Operator credential for admin-scoped routes (registration + dead-letter admin).
-# auto_error=False so we return 401 (not the default 403) for a missing token.
-_admin_key_scheme = APIKeyHeader(name="X-Admin-Token", auto_error=False)
+# Distinct scheme_name so OpenAPI shows it separately from the device key; auto_error=False
+# so we return 401 (not the default 403) for a missing token.
+_admin_key_scheme = APIKeyHeader(name="X-Admin-Token", scheme_name="AdminToken", auto_error=False)
 
 
 async def require_admin(admin_token: Annotated[str | None, Security(_admin_key_scheme)]) -> None:

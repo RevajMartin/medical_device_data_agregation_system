@@ -24,6 +24,8 @@ from locust import HttpUser, between, task
 
 ALERT_FRACTION = float(os.environ.get("ALERT_FRACTION", "0.2"))
 PATIENT = "loadtest_patient"
+# Operator token for /devices/register (must match the stack's ADMIN_API_TOKEN).
+ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "change-me-admin-token")
 
 
 class DeviceUser(HttpUser):
@@ -38,6 +40,7 @@ class DeviceUser(HttpUser):
         resp = self.client.post(
             "/devices/register",
             json={"device_id": self.device_id, "patient_id": PATIENT, "device_type": "heart_rate"},
+            headers={"X-Admin-Token": ADMIN_TOKEN},
             name="POST /devices/register",
         )
         if resp.status_code == 201:
@@ -68,8 +71,12 @@ class DeviceUser(HttpUser):
 
     @task(1)
     def request_risk_score(self):
-        # Exercises the scoring worker/queue (~5% of requests).
+        # Exercises the scoring worker/queue (~5% of requests). Patient-scoped: our device
+        # key belongs to PATIENT, so it authorizes the request.
+        if not self.api_key:
+            return
         self.client.post(
             f"/patients/{PATIENT}/risk-score",
+            headers={"X-Device-Key": self.api_key},
             name="POST /patients/:id/risk-score",
         )

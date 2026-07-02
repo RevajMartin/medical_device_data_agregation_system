@@ -17,7 +17,12 @@ from src.schemas.responses import FailedJobResponse, ReplayResponse
 from src.services.device_auth import require_admin
 
 # Operator-only: every route requires a valid X-Admin-Token (checked before any lookup).
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin)],
+    responses={401: {"description": "Missing or invalid X-Admin-Token"}},
+)
 
 
 @router.get("/failed-jobs", response_model=list[FailedJobResponse])
@@ -31,6 +36,7 @@ async def list_failed_jobs(db: AsyncSession = Depends(get_db)):
     "/failed-jobs/{job_id}/replay",
     response_model=ReplayResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses={404: {"description": "Failed job not found"}},
 )
 async def replay_failed_job(job_id: int, db: AsyncSession = Depends(get_db)):
     """Re-emit a failed job's original event; the relay re-dispatches it to the worker."""

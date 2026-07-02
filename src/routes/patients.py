@@ -16,6 +16,10 @@ router = APIRouter(
     prefix="/patients",
     tags=["patients"],
     dependencies=[Depends(require_patient_scope)],
+    responses={
+        401: {"description": "Missing or invalid X-Device-Key"},
+        403: {"description": "API key not authorized for this patient"},
+    },
 )
 
 
