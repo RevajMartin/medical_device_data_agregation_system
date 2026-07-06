@@ -57,6 +57,17 @@ async def test_aggregations_authorized(registered):
     assert resp.status_code == 200
 
 
+async def test_aggregations_invalid_device_type(registered):
+    # device_type is a Literal; an unknown value is rejected (422), not silently empty.
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{BASE_URL}/aggregations/{PATIENT_1}",
+            params={"device_type": "not_a_device"},
+            headers={"X-Device-Key": registered["HR001"]},
+        )
+    assert resp.status_code == 422
+
+
 async def test_risk_score_request_requires_key(registered):
     resp = await request_risk_score(PATIENT_1, api_key=None)
     assert resp.status_code == 401
@@ -70,6 +81,12 @@ async def test_risk_score_request_wrong_patient_forbidden(registered):
 async def test_risk_scores_list_requires_key(registered):
     resp = await get_risk_scores(PATIENT_1, api_key=None)
     assert resp.status_code == 401
+
+
+async def test_risk_scores_list_wrong_patient_forbidden(registered):
+    # HR002 is PATIENT_2's device; it must not read PATIENT_1's risk scores.
+    resp = await get_risk_scores(PATIENT_1, api_key=registered["HR002"])
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +106,22 @@ async def test_admin_failed_jobs_authorized(registered):
             f"{BASE_URL}/admin/failed-jobs", headers={"X-Admin-Token": ADMIN_TOKEN}
         )
     assert resp.status_code == 200
+
+
+async def test_admin_failed_jobs_pagination(registered):
+    async with httpx.AsyncClient() as client:
+        ok = await client.get(
+            f"{BASE_URL}/admin/failed-jobs",
+            params={"limit": 10, "offset": 0},
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+        bad = await client.get(
+            f"{BASE_URL}/admin/failed-jobs",
+            params={"limit": 0},  # below the ge=1 bound
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+    assert ok.status_code == 200
+    assert bad.status_code == 422
 
 
 async def test_admin_replay_requires_token(registered):

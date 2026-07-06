@@ -25,7 +25,7 @@ from locust import HttpUser, between, task
 ALERT_FRACTION = float(os.environ.get("ALERT_FRACTION", "0.2"))
 PATIENT = "loadtest_patient"
 # Operator token for /devices/register (must match the stack's ADMIN_API_TOKEN).
-ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "change-me-admin-token")
+ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "dev-admin-token")
 
 
 class DeviceUser(HttpUser):

@@ -21,8 +21,13 @@ devices, with **asynchronous clinical alerting** and rule-based **risk scoring**
 ## Run the stack
 
 ```bash
+cp .env.example .env          # the app refuses to start with placeholder secrets
 docker compose up --build -d
 ```
+
+The services load config from `.env`; the startup guard rejects the shipped placeholder
+secrets, so `.env` must set real values (the example ships dev-only ones — use a secret
+manager in production).
 
 Ten services start; a one-shot `migrate` service applies `alembic upgrade head` before the API,
 outbox relay and workers come up (they wait for it). Check the API is healthy:
@@ -47,7 +52,7 @@ docker compose down -v
 # 1. register a device (operator action -> needs X-Admin-Token). The response contains an
 #    api_key scoped to (device_id, patient_id).
 curl -s -X POST http://localhost:8000/devices/register \
-  -H 'X-Admin-Token: change-me-admin-token' -H 'Content-Type: application/json' \
+  -H 'X-Admin-Token: dev-admin-token' -H 'Content-Type: application/json' \
   -d '{"device_id":"HR001","patient_id":"patient_001","device_type":"heart_rate"}'
 
 # 2. ingest a clinically high reading (heart_rate > 150 -> triggers an alert).

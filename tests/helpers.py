@@ -16,7 +16,7 @@ DB_DSN = "postgresql://user:pass@localhost:5432/medical_data"
 
 # Operator credential for the admin-scoped routes (/devices/register, /admin/*).
 # Must match ADMIN_API_TOKEN in the running stack (docker-compose api service / .env).
-ADMIN_TOKEN = "change-me-admin-token"
+ADMIN_TOKEN = "dev-admin-token"
 
 PATIENT_1 = "patient_001"
 PATIENT_2 = "patient_002"

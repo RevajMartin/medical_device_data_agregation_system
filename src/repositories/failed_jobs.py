@@ -40,8 +40,10 @@ async def clear_success(db: AsyncSession, task_name: str, dedup_key: str) -> Non
     )
 
 
-async def list_all(db: AsyncSession) -> list[FailedJob]:
-    result = await db.execute(select(FailedJob).order_by(FailedJob.updated_at.desc()))
+async def list_all(db: AsyncSession, limit: int = 50, offset: int = 0) -> list[FailedJob]:
+    result = await db.execute(
+        select(FailedJob).order_by(FailedJob.updated_at.desc()).limit(limit).offset(offset)
+    )
     return list(result.scalars().all())
 
 

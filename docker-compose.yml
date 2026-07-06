@@ -1,3 +1,6 @@
+# App services load config from a local .env (run `cp .env.example .env` first). The startup
+# guard (config.py) refuses to boot with the shipped placeholder secrets, so .env must set
+# real values -- in production a secret manager injects those env vars instead.
 services:
   # PostgreSQL Database (direct connections: migrate + the outbox relay only).
   db:
@@ -75,6 +78,8 @@ services:
       dockerfile: docker/Dockerfile
     container_name: medical_data_migrate
     command: alembic upgrade head
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/medical_data
     depends_on:
@@ -91,11 +96,10 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
-      DEBUG: "false"
-      # Operator token for /admin/* and /devices/register (override in production).
-      ADMIN_API_TOKEN: change-me-admin-token
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -122,6 +126,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     command: python -m src.outbox.relay
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/medical_data
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
@@ -145,6 +151,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     command: python -m src.consumers alerts
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
@@ -166,6 +174,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     command: python -m src.consumers scoring
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:pass@pgbouncer:5432/medical_data
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//

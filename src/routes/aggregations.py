@@ -1,6 +1,7 @@
 """Aggregation endpoints for querying measurement data."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +41,7 @@ async def get_patient_aggregations(
     patient_id: str,
     start: datetime | None = None,
     end: datetime | None = None,
-    device_type: str | None = None,
+    device_type: Literal["heart_rate", "blood_pressure", "pulse_oximeter"] | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
