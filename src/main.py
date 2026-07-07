@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.config import settings
+from src.config import settings, warn_if_debug
 from src.database import close_db
 from src.routes import (
     admin_router,
@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
         level=logging.DEBUG if settings.DEBUG else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    warn_if_debug()
     logger.info("%s starting up", settings.APP_NAME)
     yield
     await close_db()

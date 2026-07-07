@@ -11,22 +11,30 @@ from src.database import get_db
 from src.repositories import devices as devices_repo
 from src.repositories import patients as patients_repo
 from src.schemas.device import DeviceRegister, DeviceRegisterResponse
-from src.services.device_auth import hash_api_key
+from src.services.device_auth import hash_api_key, require_admin
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
 @router.post(
-    "/register", response_model=DeviceRegisterResponse, status_code=status.HTTP_201_CREATED
+    "/register",
+    response_model=DeviceRegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+    responses={
+        401: {"description": "Missing or invalid X-Admin-Token"},
+        409: {"description": "Device already registered"},
+    },
 )
 async def register_device(
     payload: DeviceRegister,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Register a new medical device and generate an API key.
+    Register a new medical device and generate an API key (operator action).
 
-    The API key is scoped to a patient_id - the device can only submit data for that patient.
+    Requires the operator ``X-Admin-Token``. The returned API key is scoped to a patient_id —
+    the device can only submit data for (and read) that patient.
     """
     api_key = token_hex(settings.API_KEY_LENGTH)
     api_key_hash = await run_in_threadpool(hash_api_key, api_key)

@@ -18,9 +18,11 @@ from tests.helpers import (
     assert_no_duplicate_alerts,
     assert_no_duplicate_measurements,
     assert_outbox_drained,
-    db_fetch,
+    count_alerts,
+    hr_reading,
     ingest_measurement,
-    wait_for,
+    wait_for_alert_count,
+    wait_for_measurement_count,
 )
 
 requires_load = pytest.mark.skipif(
@@ -34,14 +36,14 @@ N = 200
 async def test_burst_fully_drains_to_alerts(registered):
     """Fire N clinically-high measurements at once; every one must end up as exactly
     one alert, with no duplicates and a fully-drained outbox."""
-    base = datetime.now(UTC) + timedelta(hours=12)
+    base = datetime.now(UTC) - timedelta(hours=12)
     hr_devices = [d for d, c in DEVICES.items() if c["device_type"] == "heart_rate"]
 
     items = []
     for i in range(N):
         dev = hr_devices[i % len(hr_devices)]
         ts = base + timedelta(milliseconds=i)  # distinct (device_id, timestamp) per request
-        data = {"device_type": "heart_rate", "heart_rate": 160, "measurement_quality": "good"}
+        data = hr_reading(160)
         items.append((dev, DEVICES[dev]["patient_id"], data, registered[dev], ts))
 
     responses = await asyncio.gather(
@@ -50,17 +52,13 @@ async def test_burst_fully_drains_to_alerts(registered):
     bad = [r.status_code for r in responses if r.status_code != 201]
     assert not bad, f"expected all 201, got non-201: {bad[:5]}"
 
-    rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
-    assert rows[0]["c"] == N
+    # The API commits in its request-teardown (after the 201 is returned), so some commits
+    # can still be in flight right after gather() returns; poll for the count.
+    assert await wait_for_measurement_count(N, timeout=15.0), "not all measurements were committed"
 
-    async def all_alerts():
-        a = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-        return a[0]["c"] >= N
+    assert await wait_for_alert_count(N, timeout=90.0), "pipeline did not drain all alerts in time"
 
-    assert await wait_for(all_alerts, timeout=90.0), "pipeline did not drain all alerts in time"
-
-    alerts = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-    assert alerts[0]["c"] == N, "exactly one alert per measurement expected"
+    assert await count_alerts() == N, "exactly one alert per measurement expected"
 
     await assert_no_duplicate_measurements()
     await assert_no_duplicate_alerts()

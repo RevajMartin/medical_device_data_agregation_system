@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.config import settings
 
@@ -8,11 +8,18 @@ from .common import Timestamp
 
 # ========== COMMON ENVELOPE ==========
 
+# Self-reported quality flag (fixed vocabulary rather than free text).
+MeasurementQuality = Literal["good", "fair", "poor"]
+
 
 class _MeasurementBase(Timestamp):
     """Fields shared by every measurement payload (the discriminated-union envelope)."""
 
-    device_id: str = Field(..., min_length=1, max_length=50)
+    # Reject unknown fields so a typo'd / spoofed key can't slip through silently.
+    model_config = ConfigDict(extra="forbid")
+
+    # Same id charset as DeviceRegister, so a malformed id is a 422 here too (not a later 403).
+    device_id: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$")
     patient_id: str = Field(..., min_length=1, max_length=50)
 
 
@@ -26,7 +33,7 @@ class HeartRateMeasurement(_MeasurementBase):
     heart_rate: int = Field(
         ..., ge=settings.HR_MIN, le=settings.HR_MAX, description="Heart rate in bpm"
     )
-    measurement_quality: str | None = Field(default="good", max_length=20)
+    measurement_quality: MeasurementQuality = "good"
 
 
 class BloodPressureMeasurement(_MeasurementBase):

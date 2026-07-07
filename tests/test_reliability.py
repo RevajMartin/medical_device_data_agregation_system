@@ -16,20 +16,24 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import httpx
 import pytest
 
 from tests.helpers import (
-    BASE_URL,
     DEVICES,
     PATIENT_1,
+    alert_count,
     assert_no_duplicate_alerts,
     assert_no_duplicate_measurements,
     assert_outbox_drained,
+    count_alerts,
     db_execute,
     db_fetch,
+    hr_reading,
     ingest_measurement,
+    measurement_id,
+    replay_failed_job,
     wait_for,
+    wait_for_alert_count,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +42,7 @@ requires_chaos = pytest.mark.skipif(
     reason="kills/restarts containers; set RUN_CHAOS=1 to run",
 )
 
-HR_CLINICAL = {"device_type": "heart_rate", "heart_rate": 170, "measurement_quality": "good"}
+HR_CLINICAL = hr_reading(170)
 
 
 async def _compose(*args: str) -> None:
@@ -52,22 +56,8 @@ async def _compose(*args: str) -> None:
     )
 
 
-async def _measurement_id(device_id: str, ts: datetime):
-    rows = await db_fetch(
-        "SELECT id FROM measurements WHERE device_id = $1 AND timestamp = $2", device_id, ts
-    )
-    return rows[0]["id"] if rows else None
-
-
-async def _alert_count(measurement_id: int) -> int:
-    rows = await db_fetch(
-        "SELECT COUNT(*) AS c FROM alerts WHERE measurement_id = $1", measurement_id
-    )
-    return rows[0]["c"]
-
-
 async def _alert_count_eq(measurement_id: int, n: int) -> bool:
-    return await _alert_count(measurement_id) == n
+    return await alert_count(measurement_id) == n
 
 
 async def _wait_container_healthy(container: str, timeout: float = 60.0) -> None:
@@ -122,8 +112,7 @@ async def test_dlq_replay_runs_and_self_clears(registered):
     job = await db_fetch("SELECT id FROM failed_jobs WHERE dedup_key = $1", request_id)
     job_id = job[0]["id"]
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{BASE_URL}/admin/failed-jobs/{job_id}/replay")
+    resp = await replay_failed_job(job_id)
     assert resp.status_code == 202
 
     async def replayed_and_cleared():
@@ -145,16 +134,16 @@ async def test_dlq_replay_runs_and_self_clears(registered):
 async def test_worker_crash_loses_no_alert(registered):
     """Worker down while an event arrives → the durable broker queue holds the task →
     the alert is created once the worker restarts (at-least-once, nothing lost)."""
-    ts = datetime.now(UTC) + timedelta(hours=8)
+    ts = datetime.now(UTC) - timedelta(hours=8)
 
     await _compose("kill", "worker-alerts")
     mid = None
     try:
         r = await ingest_measurement("HR001", PATIENT_1, HR_CLINICAL, registered["HR001"], ts)
         assert r.status_code == 201
-        mid = await _measurement_id("HR001", ts)
+        mid = await measurement_id("HR001", ts)
         await asyncio.sleep(2)
-        assert await _alert_count(mid) == 0, "no alert expected while the worker is down"
+        assert await alert_count(mid) == 0, "no alert expected while the worker is down"
     finally:
         await _compose("start", "worker-alerts")
 
@@ -168,14 +157,14 @@ async def test_worker_crash_loses_no_alert(registered):
 async def test_relay_down_recovers_via_startup_drain(registered):
     """Relay down → the NOTIFY is lost and the outbox row stays unacked; when the relay
     restarts it drains the backlog → the alert is delivered. No lost job."""
-    ts = datetime.now(UTC) + timedelta(hours=9)
+    ts = datetime.now(UTC) - timedelta(hours=9)
 
     await _compose("stop", "outbox-relay")
     mid = None
     try:
         r = await ingest_measurement("HR001", PATIENT_1, HR_CLINICAL, registered["HR001"], ts)
         assert r.status_code == 201
-        mid = await _measurement_id("HR001", ts)
+        mid = await measurement_id("HR001", ts)
         await asyncio.sleep(2)
         rows = await db_fetch(
             "SELECT acked FROM outbox "
@@ -197,7 +186,7 @@ async def test_broker_outage_keeps_events_safe(registered):
     """Broker down → the relay cannot enqueue, so the outbox row stays acked=false
     (nothing is lost — the transactional-outbox durability guarantee). Once the broker
     is back and relay + worker reconnect, the backlog drains and the alert is delivered."""
-    ts = datetime.now(UTC) + timedelta(hours=10)
+    ts = datetime.now(UTC) - timedelta(hours=10)
 
     await _compose("stop", "rabbitmq")
     mid = None
@@ -205,7 +194,7 @@ async def test_broker_outage_keeps_events_safe(registered):
         # The ingest path never touches the broker, so it still succeeds.
         r = await ingest_measurement("HR001", PATIENT_1, HR_CLINICAL, registered["HR001"], ts)
         assert r.status_code == 201
-        mid = await _measurement_id("HR001", ts)
+        mid = await measurement_id("HR001", ts)
         await asyncio.sleep(8)  # let the relay attempt (and fail) to enqueue
         rows = await db_fetch(
             "SELECT acked FROM outbox "
@@ -215,7 +204,7 @@ async def test_broker_outage_keeps_events_safe(registered):
         assert (
             rows and rows[0]["acked"] is False
         ), "event must stay unacked while the broker is down"
-        assert await _alert_count(mid) == 0
+        assert await alert_count(mid) == 0
     finally:
         await _compose("start", "rabbitmq")
         await _wait_container_healthy("medical_data_rabbitmq")
@@ -243,13 +232,13 @@ async def test_two_relays_no_double_processing(registered):
             lambda: _replicas_eq("outbox-relay", 2), timeout=30.0
         ), "two relay replicas did not come up"
 
-        base = datetime.now(UTC) + timedelta(hours=11)
+        base = datetime.now(UTC) - timedelta(hours=11)
         hr_devices = [d for d, c in DEVICES.items() if c["device_type"] == "heart_rate"]
         items = []
         for i in range(n):
             dev = hr_devices[i % len(hr_devices)]
             ts = base + timedelta(milliseconds=i)
-            data = {"device_type": "heart_rate", "heart_rate": 160, "measurement_quality": "good"}
+            data = hr_reading(160)
             items.append((dev, DEVICES[dev]["patient_id"], data, registered[dev], ts))
 
         responses = await asyncio.gather(
@@ -257,16 +246,11 @@ async def test_two_relays_no_double_processing(registered):
         )
         assert all(r.status_code == 201 for r in responses)
 
-        async def all_alerts():
-            a = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-            return a[0]["c"] >= n
-
-        assert await wait_for(
-            all_alerts, timeout=60.0
+        assert await wait_for_alert_count(
+            n, timeout=60.0
         ), "two relays did not drain the backlog in time"
 
-        alerts = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
-        assert alerts[0]["c"] == n, "exactly one alert per measurement expected"
+        assert await count_alerts() == n, "exactly one alert per measurement expected"
         await assert_no_duplicate_measurements()
         await assert_no_duplicate_alerts()
         await assert_outbox_drained(timeout=30.0)

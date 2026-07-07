@@ -1,6 +1,7 @@
 """Aggregation endpoints for querying measurement data."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,8 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.repositories import aggregations as aggregations_repo
 from src.schemas.responses import AggregationResponse, FieldStats
+from src.services.device_auth import require_patient_scope
 
-router = APIRouter(prefix="/aggregations", tags=["aggregations"])
+# Patient-scoped: a valid X-Device-Key whose patient matches {patient_id} (else 401/403).
+router = APIRouter(
+    prefix="/aggregations",
+    tags=["aggregations"],
+    dependencies=[Depends(require_patient_scope)],
+    responses={
+        401: {"description": "Missing or invalid X-Device-Key"},
+        403: {"description": "API key not authorized for this patient"},
+    },
+)
 
 
 # Numeric measurement fields grouped by their owning device_type. Field names come
@@ -30,7 +41,7 @@ async def get_patient_aggregations(
     patient_id: str,
     start: datetime | None = None,
     end: datetime | None = None,
-    device_type: str | None = None,
+    device_type: Literal["heart_rate", "blood_pressure", "pulse_oximeter"] | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """

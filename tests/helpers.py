@@ -14,6 +14,10 @@ import httpx
 BASE_URL = "http://localhost:8000"
 DB_DSN = "postgresql://user:pass@localhost:5432/medical_data"
 
+# Operator credential for the admin-scoped routes (/devices/register, /admin/*).
+# Must match ADMIN_API_TOKEN in the running stack (docker-compose api service / .env).
+ADMIN_TOKEN = "dev-admin-token"
+
 PATIENT_1 = "patient_001"
 PATIENT_2 = "patient_002"
 
@@ -77,7 +81,10 @@ async def truncate_all() -> None:
 
 
 async def register_device(device_id: str, patient_id: str, device_type: str) -> str:
-    """Register a device and return its API key (raises on non-2xx)."""
+    """Register a device and return its API key (raises on non-2xx).
+
+    Registration is an operator action -> authenticated with the admin token.
+    """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{BASE_URL}/devices/register",
@@ -86,6 +93,7 @@ async def register_device(device_id: str, patient_id: str, device_type: str) -> 
                 "patient_id": patient_id,
                 "device_type": device_type,
             },
+            headers={"X-Admin-Token": ADMIN_TOKEN},
         )
         resp.raise_for_status()
         return resp.json()["api_key"]
@@ -112,14 +120,50 @@ async def ingest_measurement(
         return await client.post(f"{BASE_URL}/ingest/", json=payload, headers=headers)
 
 
-async def get_aggregations(patient_id: str, start: datetime, end: datetime) -> dict:
+def hr_reading(bpm: int = 72, quality: str = "good") -> dict:
+    """Heart-rate ``data`` payload for ``ingest_measurement`` (device-specific fields)."""
+    return {"device_type": "heart_rate", "heart_rate": bpm, "measurement_quality": quality}
+
+
+async def get_aggregations(
+    patient_id: str, start: datetime, end: datetime, api_key: str
+) -> dict:
+    """Read a patient's aggregations (patient-scoped: needs one of the patient's device keys)."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{BASE_URL}/aggregations/{patient_id}",
             params={"start": start.isoformat(), "end": end.isoformat()},
+            headers={"X-Device-Key": api_key},
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def request_risk_score(patient_id: str, api_key: str | None) -> httpx.Response:
+    """Request an async risk score (patient-scoped). Pass api_key=None to omit the header."""
+    headers = {"X-Device-Key": api_key} if api_key is not None else {}
+    async with httpx.AsyncClient() as client:
+        return await client.post(
+            f"{BASE_URL}/patients/{patient_id}/risk-score", headers=headers
+        )
+
+
+async def get_risk_scores(patient_id: str, api_key: str | None) -> httpx.Response:
+    """List a patient's risk scores (patient-scoped). Pass api_key=None to omit the header."""
+    headers = {"X-Device-Key": api_key} if api_key is not None else {}
+    async with httpx.AsyncClient() as client:
+        return await client.get(
+            f"{BASE_URL}/patients/{patient_id}/risk-scores", headers=headers
+        )
+
+
+async def replay_failed_job(job_id: int, admin_token: str | None = ADMIN_TOKEN) -> httpx.Response:
+    """Replay a dead-letter job (admin-scoped). Pass admin_token=None to omit the header."""
+    headers = {"X-Admin-Token": admin_token} if admin_token is not None else {}
+    async with httpx.AsyncClient() as client:
+        return await client.post(
+            f"{BASE_URL}/admin/failed-jobs/{job_id}/replay", headers=headers
+        )
 
 
 async def db_fetch(query: str, *args) -> list[dict]:
@@ -141,6 +185,24 @@ async def db_execute(query: str, *args) -> str:
         await conn.close()
 
 
+async def measurement_id(device_id: str, ts: datetime, timeout: float = 5.0) -> int | None:
+    """Resolve a measurement's id, briefly polling for the ingest commit to land.
+
+    The API commits in its request-teardown (after the 201 is returned), so a read on a
+    separate DB connection immediately after can miss the row; poll to avoid that race.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        rows = await db_fetch(
+            "SELECT id FROM measurements WHERE device_id = $1 AND timestamp = $2", device_id, ts
+        )
+        if rows:
+            return rows[0]["id"]
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.1)
+
+
 async def wait_for(predicate, timeout: float = 10.0, interval: float = 0.5) -> bool:
     """Poll an async predicate until it returns truthy or the timeout elapses."""
     deadline = time.monotonic() + timeout
@@ -149,6 +211,49 @@ async def wait_for(predicate, timeout: float = 10.0, interval: float = 0.5) -> b
             return True
         await asyncio.sleep(interval)
     return False
+
+
+# --- Count oracles + poll helpers (shared by the load / reliability tests) ---
+
+
+async def count_measurements() -> int:
+    rows = await db_fetch("SELECT COUNT(*) AS c FROM measurements")
+    return rows[0]["c"]
+
+
+async def count_alerts() -> int:
+    rows = await db_fetch("SELECT COUNT(*) AS c FROM alerts")
+    return rows[0]["c"]
+
+
+async def alert_count(measurement_id: int) -> int:
+    """Number of alerts for a single measurement."""
+    rows = await db_fetch(
+        "SELECT COUNT(*) AS c FROM alerts WHERE measurement_id = $1", measurement_id
+    )
+    return rows[0]["c"]
+
+
+async def wait_for_measurement_count(n: int, timeout: float = 15.0) -> bool:
+    """Poll until exactly ``n`` measurements are committed.
+
+    The API commits in its request-teardown (after the 201 response), so a count taken
+    right after a concurrent burst can still be short a few in-flight commits.
+    """
+
+    async def reached():
+        return await count_measurements() == n
+
+    return await wait_for(reached, timeout=timeout)
+
+
+async def wait_for_alert_count(n: int, timeout: float = 15.0) -> bool:
+    """Poll until at least ``n`` alerts exist."""
+
+    async def reached():
+        return await count_alerts() >= n
+
+    return await wait_for(reached, timeout=timeout)
 
 
 # --- Reliability invariants (shared oracle for the load / chaos tests) ---

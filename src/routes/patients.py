@@ -9,8 +9,18 @@ from src.database import get_db
 from src.outbox.producer import emit_outbox_event
 from src.repositories import risk_scores as risk_scores_repo
 from src.schemas.responses import RiskScoreListResponse, RiskScoreRequestResponse
+from src.services.device_auth import require_patient_scope
 
-router = APIRouter(prefix="/patients", tags=["patients"])
+# Patient-scoped: every route is /{patient_id}/..., guarded by the device key's patient scope.
+router = APIRouter(
+    prefix="/patients",
+    tags=["patients"],
+    dependencies=[Depends(require_patient_scope)],
+    responses={
+        401: {"description": "Missing or invalid X-Device-Key"},
+        403: {"description": "API key not authorized for this patient"},
+    },
+)
 
 
 @router.post(
